@@ -1,9 +1,9 @@
 import streamlit as st
-from pycricbuzz import Cricbuzz
-from datetime import datetime
+import feedparser
+from datetime import datetime, timedelta
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Cricket Live (Free)", page_icon="🏏", layout="centered")
+st.set_page_config(page_title="Cricket Live (RSS)", page_icon="🏏", layout="centered")
 
 # --- CSS FOR MOBILE LOOK ---
 hide_menu_style = """
@@ -11,139 +11,83 @@ hide_menu_style = """
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     div.block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
-    h3 {font-size: 1.1rem !important; margin-top: 1rem !important; color: #444;}
+    .stAlert {padding: 0.5rem;}
+    h3 {font-size: 1rem !important; margin: 0 !important;}
+    p {font-size: 0.9rem !important;}
     </style>
     """
 st.markdown(hide_menu_style, unsafe_allow_html=True)
 
-# --- INIT CRICBUZZ ---
-c = Cricbuzz()
+# --- RSS FEED URL (Google News Cricket) ---
+RSS_URL = "https://news.google.com/rss/search?q=cricket+live+score&hl=en-IN&gl=IN&ceid=IN:en"
 
-def get_matches(status_filter):
-    matches = c.matches()
-    filtered_data = []
-    
-    for match in matches:
-        # The library returns a dictionary for each match
-        # We filter based on the user's selection
-        m_state = match.get('mchstate', '').lower()
-        m_status = match.get('status', '').lower()
-        
-        if status_filter == "Live":
-            if m_state == "inprogress" or m_state == "tea" or m_state == "lunch":
-                filtered_data.append(match)
-                
-        elif status_filter == "Recent":
-            if m_state == "mom" or m_state == "complete":
-                filtered_data.append(match)
-                
-        elif status_filter == "Upcoming":
-            if m_state == "preview" or m_state == "next":
-                filtered_data.append(match)
-                
-        elif status_filter == "All":
-            filtered_data.append(match)
-            
-    return filtered_data
+def get_cricket_feed():
+    # Parse the feed
+    feed = feedparser.parse(RSS_URL)
+    return feed.entries
 
-def get_score_details(match_id):
+# --- HELPER TO EXTRACT INFO ---
+def parse_title(title):
+    # Google RSS titles usually look like: "India vs Australia Live Score: IND 120/2..."
+    # We want to split this to make it look nice
     try:
-        # Fetch detailed score for a specific match
-        info = c.livescore(match_id)
-        return info
+        parts = title.split(":")
+        if len(parts) > 1:
+            teams = parts[0].strip()
+            score = parts[1].strip()
+            return teams, score
+        else:
+            return title, "Click for details"
     except:
-        return {}
+        return title, ""
 
 # --- UI HEADER ---
 col1, col2 = st.columns([3, 1])
 with col1:
-    st.title("🏏 Cricket Hub")
+    st.title("🏏 Google Scores")
 with col2:
     if st.button("🔄"):
         st.rerun()
 
-# --- FILTER ---
-status_filter = st.selectbox("Show Matches:", ["Live", "Recent", "Upcoming", "All"])
-
-# --- FETCH DATA ---
+# --- FETCH & DISPLAY ---
 try:
-    matches_list = get_matches(status_filter)
+    entries = get_cricket_feed()
+    
+    if not entries:
+        st.info("No live updates found on Google RSS right now.")
+        st.stop()
+        
+    st.caption(f"Source: Google News • {len(entries)} updates found")
+
+    for entry in entries:
+        # Filter: Only show relevant match updates
+        # We skip generic news articles to focus on scores
+        if "Live" in entry.title or "Score" in entry.title or "vs" in entry.title:
+            
+            teams, score = parse_title(entry.title)
+            
+            with st.container():
+                st.divider()
+                
+                # Header (Teams)
+                st.markdown(f"### {teams}")
+                
+                # Score (Highlighted)
+                if score and score != "Click for details":
+                    st.info(f"📊 {score}")
+                
+                # Time (Published)
+                published = entry.published_parsed
+                if published:
+                    dt = datetime(*published[:6]) + timedelta(hours=5, minutes=30)
+                    time_str = dt.strftime("%I:%M %p")
+                    st.caption(f"Updated: {time_str} • [View on Google]({entry.link})")
+                else:
+                    st.caption(f"[View on Google]({entry.link})")
+                    
 except Exception as e:
-    st.error("⚠️ Cricbuzz is blocking the connection. Try again in 1 minute.")
-    st.stop()
+    st.error(f"Error fetching feed: {e}")
 
-if not matches_list:
-    st.info(f"No {status_filter} matches found.")
-    st.stop()
-
-# --- DISPLAY CARDS ---
-for m in matches_list:
-    match_id = m['id']
-    series = m.get('srs', 'Unknown Series')
-    t1 = m.get('team1', {}).get('name', '')
-    t2 = m.get('team2', {}).get('name', '')
-    status = m.get('status', '')
-    state = m.get('mchstate', '')
-
-    # Fetch live details ONLY if the match is Live
-    score_data = {}
-    if state == "inprogress":
-        score_data = get_score_details(match_id)
-
-    with st.container():
-        st.divider()
-        
-        # Icon Logic
-        if "won" in status.lower(): icon = "🏆"
-        elif "starts" in status.lower(): icon = "⏰"
-        else: icon = "🔴"
-
-        st.caption(f"{series} • {m.get('type', '')}")
-
-        # Teams & Scores
-        # The library structure is slightly different for scores
-        # We try to get it from the detailed 'score_data' if available
-        
-        t1_s = "-"
-        t2_s = "-"
-        
-        if score_data:
-            t1_s = score_data.get('batting', {}).get('score', [])
-            if t1_s: t1_s = f"{t1_s[0].get('runs')}/{t1_s[0].get('wickets')} ({t1_s[0].get('overs')})"
-            else: t1_s = "-"
-            
-            t2_s = score_data.get('bowling', {}).get('score', [])
-            if t2_s: t2_s = f"{t2_s[0].get('runs')}/{t2_s[0].get('wickets')} ({t2_s[0].get('overs')})"
-            else: t2_s = "-"
-
-        # If not live, just show names
-        c1, c2 = st.columns([2, 2])
-        c1.write(f"**{t1}**")
-        c1.write(f"**{t2}**")
-        
-        c2.write(f"**{t1_s}**")
-        c2.write(f"**{t2_s}**")
-
-        st.info(f"{icon} {status}")
-        
-        # Show Batman/Bowler only if available
-        if score_data and 'batsman' in score_data:
-            st.markdown("---")
-            batsman = score_data.get('batsman', [])
-            bowler = score_data.get('bowler', [])
-            
-            col_a, col_b = st.columns(2)
-            if batsman:
-                with col_a:
-                    st.caption("Batting")
-                    for b in batsman:
-                        st.write(f"**{b['name']}**: {b['runs']}({b['balls']})")
-            
-            if bowler:
-                with col_b:
-                    st.caption("Bowling")
-                    for b in bowler:
-                        st.write(f"**{b['name']}**: {b['wickets']}/{b['runs']}")
-
-st.caption(f"Updated: {datetime.now().strftime('%H:%M')}")
+# Footer
+now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+st.caption(f"Last Sync: {now_ist.strftime('%I:%M %p')} IST")
