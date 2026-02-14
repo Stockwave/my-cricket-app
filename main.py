@@ -1,23 +1,11 @@
 import streamlit as st
 import requests
-from datetime import datetime, date, timedelta
+from datetime import datetime
 
-# --- APP CONFIGURATION ---
-st.set_page_config(page_title="Cricket Hub", page_icon="🏏", layout="centered")
+st.set_page_config(page_title="Debug Mode", layout="centered")
+st.title("🛠️ Cricket Debugger")
 
-# --- CSS FOR MOBILE LOOK ---
-hide_menu_style = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    div.block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
-    h3 {font-size: 1.1rem !important; margin-top: 1rem !important; color: #444;}
-    </style>
-    """
-st.markdown(hide_menu_style, unsafe_allow_html=True)
-
-# --- API SETUP ---
+# --- 1. SETUP ---
 try:
     API_KEY = st.secrets["RAPIDAPI_KEY"]
 except:
@@ -28,210 +16,33 @@ HEADERS = {
     "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
 }
 
-ENDPOINTS = {
-    "Live": "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/live",
-    "Recent": "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/recent",
-    "Upcoming": "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/upcoming"
-}
+URL = "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/live"
 
-def fetch_matches_from_url(url):
+# --- 2. THE TEST ---
+if st.button("🔴 Run Diagnostic Test", type="primary"):
+    st.write("1. Attempting to connect...")
+    
     try:
-        response = requests.get(url, headers=HEADERS, timeout=5)
+        response = requests.get(URL, headers=HEADERS, timeout=10)
+        
+        # SHOW THE STATUS CODE (200 is Good, 401/403 is Key Error, 429 is Limit Reached)
+        st.write(f"**Status Code:** {response.status_code}")
+        
+        # SHOW THE RAW DATA
         data = response.json()
+        st.write("**Raw API Response:**")
+        st.json(data)
         
-        parsed_matches = []
-        if 'typeMatches' in data:
-            for match_type in data['typeMatches']: 
-                if 'seriesMatches' in match_type:
-                    for series in match_type['seriesMatches']:
-                        source = series.get('seriesAdWrapper', {}).get('matches', series.get('matches', []))
-                        for match in source:
-                            parsed_matches.append(match)
-        return parsed_matches
-    except:
-        return []
-
-def get_data(category):
-    if category == "All":
-        all_data = []
-        for key, link in ENDPOINTS.items():
-            all_data.extend(fetch_matches_from_url(link))
-        return all_data
-    else:
-        return fetch_matches_from_url(ENDPOINTS[category])
-
-# --- STRICT IST TIME CONVERSION ---
-def get_ist_datetime(timestamp_ms):
-    """
-    Converts API timestamp (milliseconds) to IST datetime object.
-    Logic: UTC Timestamp + 5h 30m
-    """
-    try:
-        # 1. Get naive UTC object from timestamp
-        utc_obj = datetime.utcfromtimestamp(int(timestamp_ms) / 1000)
-        # 2. Add 5 hours 30 mins
-        ist_obj = utc_obj + timedelta(hours=5, minutes=30)
-        return ist_obj
-    except:
-        return datetime.now()
-
-def get_match_date_header(timestamp_ms):
-    """Returns readable date header in IST"""
-    try:
-        match_date = get_ist_datetime(timestamp_ms).date()
-        # Get current IST date
-        now_utc = datetime.utcnow()
-        now_ist = now_utc + timedelta(hours=5, minutes=30)
-        today = now_ist.date()
-        
-        if match_date == today:
-            return "Today"
-        elif (match_date - today).days == 1:
-            return "Tomorrow"
-        elif (today - match_date).days == 1:
-            return "Yesterday"
-        else:
-            return match_date.strftime("%d %b %Y") 
-    except:
-        return "Date Unknown"
-
-# --- UI HEADER ---
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("🏏 Cricket Hub")
-with col2:
-    if st.button("🔄"):
-        st.rerun()
-
-# --- FILTER 1: STATUS ---
-status_filter = st.selectbox("Show Matches:", ["Live", "Recent", "Upcoming", "All"])
-
-# --- FETCH DATA ---
-if status_filter == "All":
-    st.toast("Fetching data...")
-
-matches = get_data(status_filter)
-
-if not matches:
-    st.info(f"No {status_filter} matches found.")
-    st.stop()
-
-# --- LOGIC FIX: REMOVE FINISHED MATCHES FROM LIVE VIEW ---
-if status_filter == "Live":
-    matches = [
-        m for m in matches 
-        if "Won" not in m['matchInfo']['status'] 
-        and "Complete" not in m['matchInfo']['state']
-    ]
-
-# --- FILTER 2: SERIES ---
-all_series = list(set([m['matchInfo']['seriesName'] for m in matches if 'matchInfo' in m]))
-if len(all_series) > 1:
-    selected_series = st.selectbox("Filter Series:", ["All"] + all_series)
-    if selected_series != "All":
-        matches = [m for m in matches if m['matchInfo']['seriesName'] == selected_series]
-
-# --- GROUP BY DATE LOGIC ---
-matches_by_date = {}
-for m in matches:
-    ts = m['matchInfo'].get('startDate', 0)
-    date_header = get_match_date_header(ts)
-    
-    if date_header not in matches_by_date:
-        matches_by_date[date_header] = []
-    matches_by_date[date_header].append(m)
-
-# --- DISPLAY MATCH CARDS ---
-for date_group, match_list in matches_by_date.items():
-    
-    if status_filter != "Live":
-        st.subheader(f"📅 {date_group}")
-
-    for m in match_list:
-        info = m['matchInfo']
-        score = m.get('matchScore', {})
-        mini = m.get('miniscore', {})
-        
-        # --- CALCULATE IST TIME FOR DISPLAY ---
-        start_ts = info.get('startDate', 0)
-        ist_dt = get_ist_datetime(start_ts)
-        ist_time_str = ist_dt.strftime("%I:%M %p") # e.g. "07:30 PM"
-
-        with st.container():
-            st.divider()
+        # CHECK FOR SPECIFIC ERRORS
+        if response.status_code == 401:
+            st.error("❌ Error 401: Unauthorized. Your API Key is wrong or missing.")
+        elif response.status_code == 429:
+            st.error("❌ Error 429: Too Many Requests. You have used all your free credits for today.")
+        elif "message" in data:
+            st.warning(f"⚠️ API Message: {data['message']}")
             
-            # --- ICON LOGIC ---
-            status_text = info['status']
-            state = info.get('state', '').lower()
-            
-            if "won" in status_text.lower(): 
-                icon = "🏆"  # Trophy for Won
-            elif "starts" in status_text.lower() or "scheduled" in state or "preview" in state: 
-                icon = "⏰"  # Alarm for Upcoming
-            else: 
-                icon = "🏏"  # Bat for Live
-                
-            # Header
-            st.caption(f"{info['seriesName']} • {info['matchFormat']}")
+    except Exception as e:
+        st.error(f"❌ Connection Failed completely: {e}")
 
-            # Scoreboard
-            t1 = info['team1']['teamName']
-            t2 = info['team2']['teamName']
-            
-            def get_score_str(team_key):
-                s = score.get(team_key, {}).get('inngs1', {})
-                if s.get('runs'):
-                    return f"{s.get('runs')}/{s.get('wickets', '0')} ({s.get('overs')} ov)"
-                return "-" 
-
-            c1, c2 = st.columns([2, 2])
-            c1.write(f"**{t1}**")
-            c2.write(f"**{get_score_str('team1Score')}**")
-            
-            c1, c2 = st.columns([2, 2])
-            c1.write(f"**{t2}**")
-            c2.write(f"**{get_score_str('team2Score')}**")
-
-            # Status Box
-            if icon == "⏰":
-                # For upcoming matches, show the calculated IST time
-                st.info(f"{icon} Starts at **{ist_time_str}** IST")
-            else:
-                st.info(f"{icon} {status_text}")
-
-            # Detailed Stats (Live Only)
-            if mini:
-                st.markdown("---") 
-                r1c1, r1c2 = st.columns(2)
-                with r1c1:
-                    st.caption("Striker")
-                    name = mini.get('batsmanStriker', {}).get('batName', '-')
-                    runs = mini.get('batsmanStriker', {}).get('batRuns', '-')
-                    balls = mini.get('batsmanStriker', {}).get('batBalls', '-')
-                    st.write(f"**{name}** {runs}({balls})")
-                
-                with r1c2:
-                    st.caption("Non-Striker")
-                    name = mini.get('batsmanNonStriker', {}).get('batName', '-')
-                    runs = mini.get('batsmanNonStriker', {}).get('batRuns', '-')
-                    balls = mini.get('batsmanNonStriker', {}).get('batBalls', '-')
-                    st.write(f"**{name}** {runs}({balls})")
-                
-                st.write("") 
-                r2c1, r2c2 = st.columns(2)
-                with r2c1:
-                    st.caption("Bowler")
-                    name = mini.get('bowlerStriker', {}).get('bowlName', '-')
-                    figs = mini.get('bowlerStriker', {}).get('bowlWkts', '-')
-                    runs = mini.get('bowlerStriker', {}).get('bowlRuns', '-')
-                    st.write(f"**{name}** {figs}/{runs}")
-
-                with r2c2:
-                    st.caption("Rates")
-                    crr = mini.get('crr', '-')
-                    st.write(f"CRR: {crr}")
-
-# Footer
-current_utc = datetime.utcnow()
-current_ist = current_utc + timedelta(hours=5, minutes=30)
-st.caption(f"Updated: {current_ist.strftime('%I:%M %p')} IST")
+else:
+    st.info("Click the button above to test your connection.")
