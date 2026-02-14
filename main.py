@@ -60,19 +60,29 @@ def get_data(category):
     else:
         return fetch_matches_from_url(ENDPOINTS[category])
 
-# --- DATE & TIME HELPER (CONVERT TO IST) ---
-def get_ist_time(timestamp):
-    """Converts API timestamp to IST datetime object"""
-    utc_time = datetime.fromtimestamp(int(timestamp) / 1000)
-    # Add 5 hours 30 mins for India Time
-    ist_time = utc_time + timedelta(hours=5, minutes=30)
-    return ist_time
+# --- STRICT IST TIME CONVERSION ---
+def get_ist_datetime(timestamp_ms):
+    """
+    Converts API timestamp (milliseconds) to IST datetime object.
+    Logic: UTC Timestamp + 5h 30m
+    """
+    try:
+        # 1. Get naive UTC object from timestamp
+        utc_obj = datetime.utcfromtimestamp(int(timestamp_ms) / 1000)
+        # 2. Add 5 hours 30 mins
+        ist_obj = utc_obj + timedelta(hours=5, minutes=30)
+        return ist_obj
+    except:
+        return datetime.now()
 
-def get_match_date_header(timestamp):
+def get_match_date_header(timestamp_ms):
     """Returns readable date header in IST"""
     try:
-        match_date = get_ist_time(timestamp).date()
-        today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
+        match_date = get_ist_datetime(timestamp_ms).date()
+        # Get current IST date
+        now_utc = datetime.utcnow()
+        now_ist = now_utc + timedelta(hours=5, minutes=30)
+        today = now_ist.date()
         
         if match_date == today:
             return "Today"
@@ -142,23 +152,26 @@ for date_group, match_list in matches_by_date.items():
         score = m.get('matchScore', {})
         mini = m.get('miniscore', {})
         
-        # Calculate Match Time in IST
+        # --- CALCULATE IST TIME FOR DISPLAY ---
         start_ts = info.get('startDate', 0)
-        ist_time = get_ist_time(start_ts).strftime("%I:%M %p") # e.g., "07:30 PM"
+        ist_dt = get_ist_datetime(start_ts)
+        ist_time_str = ist_dt.strftime("%I:%M %p") # e.g. "07:30 PM"
 
         with st.container():
             st.divider()
             
-            # --- ICON LOGIC (UPDATED) ---
+            # --- ICON LOGIC ---
             status_text = info['status']
-            if "Won" in status_text: 
+            state = info.get('state', '').lower()
+            
+            if "won" in status_text.lower(): 
                 icon = "🏆"  # Trophy for Won
-            elif "Starts" in status_text or "scheduled" in info['state'].lower(): 
+            elif "starts" in status_text.lower() or "scheduled" in state or "preview" in state: 
                 icon = "⏰"  # Alarm for Upcoming
             else: 
-                icon = "🏏"  # Bat & Ball for Live
+                icon = "🏏"  # Bat for Live
                 
-            # Header: Series + Format
+            # Header
             st.caption(f"{info['seriesName']} • {info['matchFormat']}")
 
             # Scoreboard
@@ -180,9 +193,9 @@ for date_group, match_list in matches_by_date.items():
             c2.write(f"**{get_score_str('team2Score')}**")
 
             # Status Box
-            # If match hasn't started, show the IST Time
             if icon == "⏰":
-                st.info(f"{icon} Starts at {ist_time} (IST)")
+                # For upcoming matches, show the calculated IST time
+                st.info(f"{icon} Starts at **{ist_time_str}** IST")
             else:
                 st.info(f"{icon} {status_text}")
 
@@ -218,6 +231,7 @@ for date_group, match_list in matches_by_date.items():
                     crr = mini.get('crr', '-')
                     st.write(f"CRR: {crr}")
 
-# Simple IST Time Footer
-current_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
-st.caption(f"Updated: {current_ist} IST")
+# Footer
+current_utc = datetime.utcnow()
+current_ist = current_utc + timedelta(hours=5, minutes=30)
+st.caption(f"Updated: {current_ist.strftime('%I:%M %p')} IST")
