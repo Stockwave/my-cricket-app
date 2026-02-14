@@ -1,92 +1,223 @@
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Cricket Live", page_icon="🏏", layout="centered")
+st.set_page_config(page_title="Cricket Hub", page_icon="🏏", layout="centered")
 
-# --- HIDE STREAMLIT BRANDING ---
+# --- CSS FOR MOBILE LOOK ---
 hide_menu_style = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    div.block-container {padding-top: 1rem; padding-bottom: 1rem;}
+    div.block-container {padding-top: 1rem; padding-bottom: 2rem;}
+    [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
+    h3 {font-size: 1.1rem !important; margin-top: 1rem !important; color: #444;}
     </style>
     """
 st.markdown(hide_menu_style, unsafe_allow_html=True)
 
-# --- API KEY SETUP ---
-# We use st.secrets for safety on the cloud
+# --- API SETUP ---
 try:
     API_KEY = st.secrets["RAPIDAPI_KEY"]
 except:
-    # If you run this on your laptop without secrets, paste key here:
     API_KEY = "PASTE_YOUR_KEY_HERE" 
 
-URL = "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/live"
 HEADERS = {
     "X-RapidAPI-Key": API_KEY,
     "X-RapidAPI-Host": "cricbuzz-cricket.p.rapidapi.com"
 }
 
-def get_live_data():
+ENDPOINTS = {
+    "Live": "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/live",
+    "Recent": "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/recent",
+    "Upcoming": "https://cricbuzz-cricket.p.rapidapi.com/matches/v1/upcoming"
+}
+
+def fetch_matches_from_url(url):
     try:
-        response = requests.get(URL, headers=HEADERS, timeout=5)
+        response = requests.get(url, headers=HEADERS, timeout=5)
         data = response.json()
-        matches_list = []
+        
+        parsed_matches = []
         if 'typeMatches' in data:
             for match_type in data['typeMatches']: 
                 if 'seriesMatches' in match_type:
                     for series in match_type['seriesMatches']:
                         source = series.get('seriesAdWrapper', {}).get('matches', series.get('matches', []))
                         for match in source:
-                            matches_list.append(match)
-        return matches_list
+                            parsed_matches.append(match)
+        return parsed_matches
     except:
         return []
 
-# --- HEADER ---
-col1, col2 = st.columns([4, 1])
+def get_data(category):
+    if category == "All":
+        all_data = []
+        for key, link in ENDPOINTS.items():
+            all_data.extend(fetch_matches_from_url(link))
+        return all_data
+    else:
+        return fetch_matches_from_url(ENDPOINTS[category])
+
+# --- DATE & TIME HELPER (CONVERT TO IST) ---
+def get_ist_time(timestamp):
+    """Converts API timestamp to IST datetime object"""
+    utc_time = datetime.fromtimestamp(int(timestamp) / 1000)
+    # Add 5 hours 30 mins for India Time
+    ist_time = utc_time + timedelta(hours=5, minutes=30)
+    return ist_time
+
+def get_match_date_header(timestamp):
+    """Returns readable date header in IST"""
+    try:
+        match_date = get_ist_time(timestamp).date()
+        today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
+        
+        if match_date == today:
+            return "Today"
+        elif (match_date - today).days == 1:
+            return "Tomorrow"
+        elif (today - match_date).days == 1:
+            return "Yesterday"
+        else:
+            return match_date.strftime("%d %b %Y") 
+    except:
+        return "Date Unknown"
+
+# --- UI HEADER ---
+col1, col2 = st.columns([3, 1])
 with col1:
-    st.title("🏏 Live Scores")
+    st.title("🏏 Cricket Hub")
 with col2:
     if st.button("🔄"):
         st.rerun()
 
-# --- MAIN APP ---
-matches = get_live_data()
+# --- FILTER 1: STATUS ---
+status_filter = st.selectbox("Show Matches:", ["Live", "Recent", "Upcoming", "All"])
+
+# --- FETCH DATA ---
+if status_filter == "All":
+    st.toast("Fetching data...")
+
+matches = get_data(status_filter)
 
 if not matches:
-    st.info("No matches live right now.")
-else:
-    # Series Filter
-    all_series = list(set([m['matchInfo']['seriesName'] for m in matches]))
-    if len(all_series) > 1:
-        selected_series = st.selectbox("Filter:", ["All"] + all_series)
-        if selected_series != "All":
-            matches = [m for m in matches if m['matchInfo']['seriesName'] == selected_series]
+    st.info(f"No {status_filter} matches found.")
+    st.stop()
 
-    # Match Cards
-    for m in matches:
+# --- LOGIC FIX: REMOVE FINISHED MATCHES FROM LIVE VIEW ---
+if status_filter == "Live":
+    matches = [
+        m for m in matches 
+        if "Won" not in m['matchInfo']['status'] 
+        and "Complete" not in m['matchInfo']['state']
+    ]
+
+# --- FILTER 2: SERIES ---
+all_series = list(set([m['matchInfo']['seriesName'] for m in matches if 'matchInfo' in m]))
+if len(all_series) > 1:
+    selected_series = st.selectbox("Filter Series:", ["All"] + all_series)
+    if selected_series != "All":
+        matches = [m for m in matches if m['matchInfo']['seriesName'] == selected_series]
+
+# --- GROUP BY DATE LOGIC ---
+matches_by_date = {}
+for m in matches:
+    ts = m['matchInfo'].get('startDate', 0)
+    date_header = get_match_date_header(ts)
+    
+    if date_header not in matches_by_date:
+        matches_by_date[date_header] = []
+    matches_by_date[date_header].append(m)
+
+# --- DISPLAY MATCH CARDS ---
+for date_group, match_list in matches_by_date.items():
+    
+    if status_filter != "Live":
+        st.subheader(f"📅 {date_group}")
+
+    for m in match_list:
         info = m['matchInfo']
         score = m.get('matchScore', {})
+        mini = m.get('miniscore', {})
         
-        def get_score(team):
-            s = score.get(team, {}).get('inngs1', {})
-            return f"{s.get('runs')}/{s.get('wickets','0')}" if s.get('runs') else "Batting..."
+        # Calculate Match Time in IST
+        start_ts = info.get('startDate', 0)
+        ist_time = get_ist_time(start_ts).strftime("%I:%M %p") # e.g., "07:30 PM"
 
         with st.container():
             st.divider()
-            st.caption(f"{info['seriesName']}")
             
-            c1, c2 = st.columns([3, 2])
-            c1.write(f"**{info['team1']['teamName']}**")
-            c2.write(f"**{get_score('team1Score')}**")
-            
-            c1, c2 = st.columns([3, 2])
-            c1.write(f"**{info['team2']['teamName']}**")
-            c2.write(f"**{get_score('team2Score')}**")
-            
-            st.info(info['status'])
+            # --- ICON LOGIC (UPDATED) ---
+            status_text = info['status']
+            if "Won" in status_text: 
+                icon = "🏆"  # Trophy for Won
+            elif "Starts" in status_text or "scheduled" in info['state'].lower(): 
+                icon = "⏰"  # Alarm for Upcoming
+            else: 
+                icon = "🏏"  # Bat & Ball for Live
+                
+            # Header: Series + Format
+            st.caption(f"{info['seriesName']} • {info['matchFormat']}")
 
-st.caption(f"Updated: {datetime.now().strftime('%H:%M')}")
+            # Scoreboard
+            t1 = info['team1']['teamName']
+            t2 = info['team2']['teamName']
+            
+            def get_score_str(team_key):
+                s = score.get(team_key, {}).get('inngs1', {})
+                if s.get('runs'):
+                    return f"{s.get('runs')}/{s.get('wickets', '0')} ({s.get('overs')} ov)"
+                return "-" 
+
+            c1, c2 = st.columns([2, 2])
+            c1.write(f"**{t1}**")
+            c2.write(f"**{get_score_str('team1Score')}**")
+            
+            c1, c2 = st.columns([2, 2])
+            c1.write(f"**{t2}**")
+            c2.write(f"**{get_score_str('team2Score')}**")
+
+            # Status Box
+            # If match hasn't started, show the IST Time
+            if icon == "⏰":
+                st.info(f"{icon} Starts at {ist_time} (IST)")
+            else:
+                st.info(f"{icon} {status_text}")
+
+            # Detailed Stats (Live Only)
+            if mini:
+                st.markdown("---") 
+                r1c1, r1c2 = st.columns(2)
+                with r1c1:
+                    st.caption("Striker")
+                    name = mini.get('batsmanStriker', {}).get('batName', '-')
+                    runs = mini.get('batsmanStriker', {}).get('batRuns', '-')
+                    balls = mini.get('batsmanStriker', {}).get('batBalls', '-')
+                    st.write(f"**{name}** {runs}({balls})")
+                
+                with r1c2:
+                    st.caption("Non-Striker")
+                    name = mini.get('batsmanNonStriker', {}).get('batName', '-')
+                    runs = mini.get('batsmanNonStriker', {}).get('batRuns', '-')
+                    balls = mini.get('batsmanNonStriker', {}).get('batBalls', '-')
+                    st.write(f"**{name}** {runs}({balls})")
+                
+                st.write("") 
+                r2c1, r2c2 = st.columns(2)
+                with r2c1:
+                    st.caption("Bowler")
+                    name = mini.get('bowlerStriker', {}).get('bowlName', '-')
+                    figs = mini.get('bowlerStriker', {}).get('bowlWkts', '-')
+                    runs = mini.get('bowlerStriker', {}).get('bowlRuns', '-')
+                    st.write(f"**{name}** {figs}/{runs}")
+
+                with r2c2:
+                    st.caption("Rates")
+                    crr = mini.get('crr', '-')
+                    st.write(f"CRR: {crr}")
+
+# Simple IST Time Footer
+current_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
+st.caption(f"Updated: {current_ist} IST")
